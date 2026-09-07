@@ -1,0 +1,7 @@
+# CPU-only torch, for servers with no GPU. ~200 MB instead of ~2.5 GB of CUDA
+# wheels. Only ImageBind needs torch now that transcription runs on whisper.cpp.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch==2.7.1+cpu
+torchvision==0.22.1+cpu
+torchaudio==2.7.1+cpu

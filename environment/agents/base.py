@@ -50,35 +50,60 @@ class FunctionRegistry:
 
         tools_dir = Path(package_dir)
         if not tools_dir.exists():
+            # Resolve against the project root so VideoAgent runs from any cwd.
+            from environment.config.runtime import PROJECT_ROOT
+            tools_dir = PROJECT_ROOT / package_dir
+        if not tools_dir.exists():
             raise ValueError(f"Tools directory not found: {tools_dir}")
 
         # Make sure tools_dir is absolute
         tools_dir = tools_dir.resolve()
+
+        # A lean install has no TTS/SVC stack, so those roles cannot import.
+        # That is expected: collect them and print one summary instead of a
+        # traceback per file.
+        skipped = {}
+
+        from environment.config.runtime import VOICE_ROLES, voice_stack_available
+        voice_ready = voice_stack_available()
 
         # 动态导入所有模块
         for module_file in tools_dir.glob("**/*.py"):
             if module_file.name.startswith("_"):
                 continue
 
+            relative_path = module_file.relative_to(tools_dir)
+            module_path = str(relative_path).replace("\\", "/").replace(".py", "").replace("/", ".")
+            base_package = package_dir.replace("/", ".")
+            module_name = f"{base_package}.{module_path}"
+
             try:
-                # 转换路径分隔符为Python模块格式
-                relative_path = module_file.relative_to(tools_dir)
-                module_path = str(relative_path).replace("\\", "/").replace(".py", "").replace("/", ".")
-
-                # 构造完整模块名
-                base_package = package_dir.replace("/", ".")
-                module_name = f"{base_package}.{module_path}"
-
                 module = importlib.import_module(module_name)
                 for name, obj in inspect.getmembers(module):
                     if (inspect.isclass(obj) and
                             issubclass(obj, BaseTool) and
                             obj != BaseTool):
+                        # These import cleanly but cannot execute without the
+                        # voice models; hide them so the router never plans a
+                        # workflow that dies partway through.
+                        if not voice_ready and obj.__name__ in VOICE_ROLES:
+                            skipped.setdefault("voice models", []).append(obj.__name__)
+                            continue
                         cls.register(obj)
             except ImportError as e:
-                print(f"Failed to import {module_name}: {e}")
+                missing = getattr(e, "name", None) or str(e)
+                skipped.setdefault(missing, []).append(module_path)
             except Exception as e:
-                print(f"Error processing {module_file}: {e}")
+                skipped.setdefault(f"{type(e).__name__}: {e}", []).append(module_path)
+
+        if skipped:
+            total = sum(len(v) for v in skipped.values())
+            print(f"[roles] {len(cls._registry)} tools registered, {total} unavailable:")
+            for reason, modules in sorted(skipped.items()):
+                shown = ", ".join(sorted(modules)[:4])
+                more = f" (+{len(modules) - 4} more)" if len(modules) > 4 else ""
+                print(f"        missing '{reason}' -> {shown}{more}")
+            print("        This is expected on a lean install; see SETUP.md.")
 
         cls._initialized = True
 

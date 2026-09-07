@@ -1,6 +1,8 @@
 import importlib
 import json
 
+from environment.config.runtime import PROJECT_ROOT
+
 _registry = None
 
 
@@ -10,7 +12,7 @@ def get_agent_class(agent_name: str):
 
     # 首次加载注册表
     if _registry is None:
-        registry_path = "environment/config/registry.json"
+        registry_path = PROJECT_ROOT / "environment/config/registry.json"
         with open(registry_path, 'r', encoding='utf-8') as f:
             _registry = json.load(f)
 

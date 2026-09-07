@@ -85,14 +85,23 @@ Video QA:
   - VideoContentQA
 Audio Overview:
   - VideoSummarizationGenerator
-
-
-
-
-
-
-
-
-
-
-
+Subtitles:
+  - SubtitleGenerator
+  - SubtitleBurner
+Text Overlay:
+  - TextOverlay
+Captioned Edit:
+  - VideoPreloader
+  - VideoSearcher
+  - VideoEditor
+  - SubtitleGenerator
+  - SubtitleBurner
+  - TextOverlay
+Trailer:
+  - VoiceoverTimeline
+  - VideoPreloader
+  - VideoSearcher
+  - VideoEditor
+  - SubtitleGenerator
+  - SubtitleBurner
+  - TextOverlay

@@ -10,17 +10,18 @@ from pathlib import Path
 from environment.agents.base import FunctionRegistry
 from environment.config.llm import claude
 from environment.roles import get_agent_class
+from environment.config.runtime import PROJECT_ROOT
 
 
 MAX_Retries = 3
-with open('environment/config/graph.txt', 'r', encoding='utf-8') as f:
+with open(PROJECT_ROOT / 'environment/config/graph.txt', 'r', encoding='utf-8') as f:
     graph_prompt = f.read()
 
 class MultiAgent:
     def __init__(self):
         FunctionRegistry.auto_register("environment/roles")
         self.registry = FunctionRegistry.get_registry()
-        self.intents_path = 'environment/config/intents.yml'
+        self.intents_path = PROJECT_ROOT / 'environment/config/intents.yml'
         self.intents = self.load_yml(self.intents_path)
         self.current_requirement = None
 

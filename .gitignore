@@ -1,0 +1,11 @@
+# local secrets
+.env
+
+# downloaded model weights
+.checkpoints/
+tools/whispercpp-models/
+
+# python env and build artifacts
+.venv/
+__pycache__/
+*.egg-info/

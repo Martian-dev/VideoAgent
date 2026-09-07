@@ -1,0 +1,8 @@
+# CUDA torch on the cu128 index. Upstream pins torch==2.3.1 on cu121, which
+# ships no sm_120 kernels - on Blackwell cards (RTX 50xx) that installs cleanly
+# and then dies at the first .cuda() call.
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+torch==2.7.1
+torchvision==0.22.1
+torchaudio==2.7.1

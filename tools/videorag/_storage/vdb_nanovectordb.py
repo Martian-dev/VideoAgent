@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 from nano_vectordb import NanoVectorDB
 from tqdm import tqdm
-from imagebind.models import imagebind_model
+from environment.config.runtime import get_imagebind
 
 from .._utils import logger
 from ..base import BaseVectorStorage
@@ -31,24 +31,8 @@ class NanoVectorDBVideoSegmentStorage(BaseVectorStorage):
         )
     
     async def upsert(self, video_name, segment_index2name, video_output_format):
-        import os
-        
-        # Determine the project root directory
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
-        
-        # Store the original working directory
-        original_dir = os.getcwd()
-        
-        # Change to the project root directory
-        os.chdir(project_root)
-        
-        # Load the model (this will look for .checkpoints relative to the project root)
-        embedder = imagebind_model.imagebind_huge(pretrained=True).cuda()
-        
-        # Change back to the original directory
-        os.chdir(original_dir)
-        embedder.eval()
+        # Cached, device-aware; see environment/config/runtime.get_imagebind.
+        embedder = get_imagebind()
         
         logger.info(f"Inserting {len(segment_index2name)} segments to {self.namespace}")
         if not len(segment_index2name):
@@ -83,24 +67,8 @@ class NanoVectorDBVideoSegmentStorage(BaseVectorStorage):
 
 
     async def query(self, query: str):
-        import os
-        
-        # Determine the project root directory
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
-        
-        # Store the original working directory
-        original_dir = os.getcwd()
-        
-        # Change to the project root directory
-        os.chdir(project_root)
-        
-        # Load the model (this will look for .checkpoints relative to the project root)
-        embedder = imagebind_model.imagebind_huge(pretrained=True).cuda()
-        
-        # Change back to the original directory
-        os.chdir(original_dir)
-        embedder.eval()
+        # Cached, device-aware; see environment/config/runtime.get_imagebind.
+        embedder = get_imagebind()
         
         embedding = encode_string_query(query, embedder)
         embedding = embedding[0]

@@ -11,7 +11,7 @@ from environment.config.llm import gpt
 from pydantic import BaseModel, Field
 from environment.agents.base import BaseTool
 import torch
-from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+from environment.config.transcribe import transcribe_segments
 
 # Configure logging
 logging.basicConfig(level=logging.INFO,
@@ -110,56 +110,9 @@ class VideoContentQA(BaseTool):
             raise e
 
     def _initialize_transcription(self):
-        """Initialize model for transcription"""
-        if self.transcript_pipe is None:
-            try:
-                logger.info("Initializing transcription model...")
-                
-                # Get the current file's directory and navigate to project root
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                parent_root = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
-                
-                # Path to the Whisper model
-                model_path = os.path.join(parent_root, "tools", "whisper-large-v3-turbo")
-                
-                if not os.path.exists(model_path):
-                    raise FileNotFoundError(f"Whisper model not found at: {model_path}")
-                
-                device = "cuda:0" if torch.cuda.is_available() else "cpu"
-                torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-                
-                logger.info(f"Loading model from: {model_path}")
-                logger.info(f"Using device: {device}, dtype: {torch_dtype}")
-                
-                model = AutoModelForSpeechSeq2Seq.from_pretrained(
-                    model_path,
-                    torch_dtype=torch_dtype,
-                    low_cpu_mem_usage=True,
-                    use_safetensors=True
-                )
-                model.to(device)
-                
-                processor = AutoProcessor.from_pretrained(model_path)
-                
-                self.transcript_pipe = pipeline(
-                    "automatic-speech-recognition",
-                    model=model,
-                    tokenizer=processor.tokenizer,
-                    feature_extractor=processor.feature_extractor,
-                    max_new_tokens=128,
-                    chunk_length_s=30,
-                    batch_size=16,
-                    return_timestamps=True,
-                    torch_dtype=torch_dtype,
-                    device=device,
-                )
-                
-                logger.info("Whisper model initialized successfully")
-                
-            except Exception as e:
-                logger.error(f"Error initializing Whisper model: {e}")
-                raise e
-
+        """Kept for call-site compatibility. whisper.cpp models are cached
+        inside environment.config.transcribe, so there is nothing to set up."""
+        return None
     def _transcribe_video(self, video_path: str) -> str:
         """Transcribe a single video file using Whisper"""
         try:
@@ -172,8 +125,9 @@ class VideoContentQA(BaseTool):
             self._initialize_transcription()
             
             # Transcribe the video (Whisper can handle video files directly)
-            result = self.transcript_pipe(video_path)
-            transcript_text = result["text"]
+            transcript_text = " ".join(
+                text for _, _, text in transcribe_segments(video_path)
+            )
             
             logger.info(f"Transcription completed for: {os.path.basename(video_path)}")
             logger.info(f"Transcript length: {len(transcript_text)} characters")
