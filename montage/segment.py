@@ -31,19 +31,29 @@ def probe_duration(video_path):
     return float(result.stdout.strip())
 
 
-def scene_changes(video_path, threshold=0.35):
-    """Timestamps where the picture changes materially, via ffmpeg scdet."""
+def scene_changes(video_path, threshold=10.0):
+    """Timestamps where the picture changes materially, via ffmpeg scdet.
+
+    `threshold` is scdet's own 0-100 scale (default 10), not a fraction. Real
+    cut scores on ordinary footage land around 12-45, so raising this much
+    starts silently dropping genuine cuts.
+
+    scdet computes the score but only *emits* it when chained into
+    metadata=print - on its own it runs and logs nothing, which looks exactly
+    like a source with no cuts in it.
+    """
     result = subprocess.run(
-        ["ffmpeg", "-i", str(video_path), "-vf", f"scdet=threshold={threshold * 100}",
+        ["ffmpeg", "-v", "info", "-i", str(video_path),
+         "-vf", f"scdet=threshold={threshold},metadata=print:file=-",
          "-f", "null", "-"],
         capture_output=True, text=True,
     )
-    # scdet logs one "lavfi.scd.time: <seconds>" line per detected change.
-    times = [float(t) for t in re.findall(r"scd\.time:\s*([0-9.]+)", result.stderr)]
+    times = [float(t) for t in
+             re.findall(r"lavfi\.scd\.time=([0-9.]+)", result.stdout)]
     return sorted(set(times))
 
 
-def segment_video(video_path, threshold=0.35, min_duration=1.5, max_duration=20.0):
+def segment_video(video_path, threshold=10.0, min_duration=1.5, max_duration=20.0):
     """Return Segments covering the whole video.
 
     Scene cuts closer together than `min_duration` are merged - a flurry of cuts
