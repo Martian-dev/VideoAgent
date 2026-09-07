@@ -1,3 +1,6 @@
---extra-index-url https://download.pytorch.org/whl/cu121
---extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
--e .
+# montage - the whole dependency list. No torch, no CUDA, no ML framework.
+# Local compute is whisper.cpp (prebuilt wheels) and ffmpeg (system package).
+
+openai>=1.60          # Meta Model API is OpenAI SDK compatible
+pywhispercpp>=1.5     # whisper.cpp bindings, CPU, no cmake needed
+pillow>=10            # frame sampling for the describe stage

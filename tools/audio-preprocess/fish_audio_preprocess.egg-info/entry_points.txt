@@ -1,2 +1,0 @@
-[console_scripts]
-fap = fish_audio_preprocess.cli.__main__:cli

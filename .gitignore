@@ -2,10 +2,13 @@
 .env
 
 # downloaded model weights
-.checkpoints/
 tools/whispercpp-models/
 
-# python env and build artifacts
+# per-source index and render cache
+.montage/
+
+# python env
 .venv/
 __pycache__/
 *.egg-info/
+.DS_Store
