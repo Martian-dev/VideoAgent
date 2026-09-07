@@ -26,15 +26,15 @@ ENVIRONMENT
   Output:        {output_path}
 
 LIMITS
-  {max_turns} turns. Each view is limited to {max_view_mb} MB; larger files must be
-  made smaller with ffmpeg first.
+  {max_seconds} seconds of wall-clock. Each view is limited to {max_view_mb} MB;
+  larger files must be made smaller with ffmpeg first.
 
 You cannot hear audio. `transcribe` is how you access speech.
 Call submit(path) when the result is ready."""
 
 
-def build(source_dir, work_dir, output_path, max_turns, max_view_mb):
+def build(source_dir, work_dir, output_path, max_seconds, max_view_mb):
     return SYSTEM.format(
         source_dir=source_dir, work_dir=work_dir, output_path=output_path,
-        max_turns=max_turns, max_view_mb=max_view_mb,
+        max_seconds=max_seconds, max_view_mb=max_view_mb,
     )

@@ -13,14 +13,16 @@ import json
 
 from openai import OpenAI
 
-from harness import media, tools
+from harness import media, progress as progress_mod, tools
+from harness.budget import Termination
 
 
 class Run:
     """One episode: a model, a task, a container path, and a budget."""
 
     def __init__(self, client, model, system, instruction, work_dir, output_path,
-                 budget, trace, max_view_bytes=media.MAX_BYTES, keep_last_looks=4):
+                 budget, trace, max_view_bytes=media.MAX_BYTES, keep_last_looks=4,
+                 allow_rewind=True):
         self.client = client
         self.model = model
         self.work_dir = work_dir
@@ -36,6 +38,10 @@ class Run:
         ]
         self.submitted = None
         self.stop_reason = None
+        self.allow_rewind = allow_rewind
+        self.rewinds = 0
+        self.progress = progress_mod.Progress(output_path=output_path,
+                                              work_dir=str(work_dir))
 
     # -- model ------------------------------------------------------------
 
@@ -49,7 +55,8 @@ class Run:
         )
         usage = response.usage
         if usage:
-            self.budget.spend(tokens=usage.total_tokens or 0)
+            self.budget.spend(input_tokens=usage.prompt_tokens or 0,
+                              output_tokens=usage.completion_tokens or 0)
         return response.choices[0], usage
 
     # -- tool dispatch ----------------------------------------------------
@@ -58,6 +65,7 @@ class Run:
         command = args.get("command", "")
         output, ok = tools.run_shell(command, self.work_dir)
         self.trace.write("shell", command=command, ok=ok, chars=len(output))
+        self.budget.record_result(ok)
         return output, None
 
     def _do_view(self, args):
@@ -68,6 +76,7 @@ class Run:
             kinds=[look.kind for look in looks],
             bytes=sum(look.bytes_sent for look in looks),
         )
+        self.budget.record_result(bool(looks))
         if not looks:
             return media.stub([], error=error or "nothing could be viewed"), None
         # The media itself cannot ride in the tool result; it follows as a user turn.
@@ -117,29 +126,51 @@ class Run:
 
         if not message.tool_calls:
             # Nothing asked for and nothing submitted: the model has stopped.
-            self.stop_reason = self.stop_reason or "no_tool_calls"
+            self.stop_reason = self.stop_reason or Termination.ABANDONED
             return False
 
-        follow_ups = []
+        loop_start = len(self.messages) - 1
+        follow_ups, actions = [], []
         for call in message.tool_calls:
             result, follow_up = self._dispatch(call)
             self.messages.append({
                 "role": "tool", "tool_call_id": call.id, "content": result,
             })
+            actions.append((call.function.name, call.function.arguments or "", result))
             if follow_up:
                 follow_ups.append(follow_up)
         self.messages.extend(follow_ups)
 
         if self.submitted:
+            self.stop_reason = Termination.SUBMITTED
             return False
 
         evicted = media.evict(self.messages, keep_last=self.keep_last_looks)
         if evicted:
             self.trace.write("evict", blocks=evicted)
 
+        stall = self.progress.record(actions, loop_start)
+        if stall:
+            if self.allow_rewind and self.rewinds == 0:
+                # Truncate back to where the loop began rather than ending the
+                # run. This adds no information - it only removes the context
+                # the model got stuck in - so it stays clean for a capability
+                # measurement. One per episode.
+                self.rewinds += 1
+                dropped = len(self.messages) - self.progress.loop_start_idx
+                del self.messages[self.progress.loop_start_idx:]
+                self.progress.reset_after_rewind()
+                self.trace.write("rewind", stall=stall, dropped_messages=dropped,
+                                 reason=self.progress.stall_reason)
+            else:
+                self.stop_reason = Termination.STALLED
+                self.trace.write("stalled", stall=stall,
+                                 reason=self.progress.stall_reason)
+                return False
+
         limit = self.budget.exhausted()
         if limit:
-            self.stop_reason = f"budget:{limit}"
+            self.stop_reason = limit
             return False
         return True
 
@@ -153,6 +184,8 @@ class Run:
             self.trace.write("error", type=type(e).__name__, message=str(e)[:800])
             raise
         finally:
-            self.trace.write("end", stop_reason=self.stop_reason,
-                             submitted=self.submitted, **self.budget.state())
+            self.trace.write("end", termination=self.stop_reason,
+                             submitted=bool(self.submitted), path=self.submitted,
+                             rewinds=self.rewinds,
+                             **self.budget.state(), **self.progress.state())
         return self.submitted, self.stop_reason
