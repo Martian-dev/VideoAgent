@@ -131,6 +131,58 @@ def cmd_edit(args):
     return 0
 
 
+def cmd_plan(args):
+    """Plan an edit and write the EDL, without rendering."""
+    video = Path(args.video)
+    if not video.exists():
+        print(f"No such file: {video}")
+        return 1
+
+    entries, work = build_index(video, args.workers, args.frames, args.force)
+    cuts, reasoning = plan.plan_edit(entries, args.instruction, args.duration)
+    edl_path = Path(args.output or work / "edl.json")
+    plan.save(cuts, reasoning, edl_path)
+
+    total = sum(c["end"] - c["start"] for c in cuts)
+    print(f"{len(cuts)} cuts, {total:.1f}s -> {edl_path}")
+    if reasoning:
+        print(f"  {reasoning}")
+    for cut in cuts:
+        label = f'  "{cut["text"]}"' if cut["text"] else ""
+        print(f"    [{cut['index']:>3}] {cut['start']:7.1f}-{cut['end']:.1f}s{label}")
+    return 0
+
+
+def cmd_render(args):
+    """Render an EDL that already exists - hand-written or edited."""
+    video = Path(args.video)
+    edl_path = Path(args.edl)
+    for label, path in (("video", video), ("edl", edl_path)):
+        if not path.exists():
+            print(f"No such {label}: {path}")
+            return 1
+
+    cuts, reasoning = plan.load(edl_path)
+    work = work_dir_for(video)
+    out = Path(args.output or work / "final.mp4")
+
+    rendered, spans = render.render(
+        video, cuts, out, work / "parts", font=args.font, width=args.width,
+        progress=lambda d, t: _bar(d, t, "cut"),
+    )
+
+    if args.subtitles:
+        cues = transcribe.transcribe_segments(rendered)
+        if cues:
+            srt = render.write_srt(cues, work / "final.srt")
+            subbed = out.with_name(out.stem + "_subtitled" + out.suffix)
+            render.burn_subtitles(rendered, srt, subbed)
+            rendered = subbed
+
+    print(f"Done: {rendered}")
+    return 0
+
+
 def cmd_doctor(args):
     checks = []
 
@@ -227,6 +279,23 @@ def main(argv=None):
     p_edit.add_argument("--font", help="path to a .ttf for on-screen text")
     p_edit.add_argument("--width", type=int, help="scale output to this width")
     p_edit.set_defaults(func=cmd_edit)
+
+    p_plan = sub.add_parser("plan", parents=[common],
+                            help="plan an edit and write the EDL, without rendering")
+    p_plan.add_argument("video")
+    p_plan.add_argument("instruction")
+    p_plan.add_argument("--duration", type=float, help="target length in seconds")
+    p_plan.add_argument("--output", "-o", help="EDL path (default: the cache dir)")
+    p_plan.set_defaults(func=cmd_plan)
+
+    p_render = sub.add_parser("render", help="render an EDL you wrote or edited")
+    p_render.add_argument("video")
+    p_render.add_argument("edl", help="path to an edl.json")
+    p_render.add_argument("--output", "-o", help="output path")
+    p_render.add_argument("--subtitles", action="store_true", help="burn in subtitles")
+    p_render.add_argument("--font", help="path to a .ttf for on-screen text")
+    p_render.add_argument("--width", type=int, help="scale output to this width")
+    p_render.set_defaults(func=cmd_render)
 
     p_doctor = sub.add_parser("doctor", help="check this machine can run it")
     p_doctor.add_argument("--api", action="store_true", help="also make one live API call")

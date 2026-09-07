@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""transcribe FILE [--srt] - speech to text with timestamps, via whisper.cpp.
+
+The model has no hearing, so this is its only route to speech. It is a plain
+CLI it chooses to run, not a stage that runs on its behalf: which spans get
+transcribed, and whether any do, is the model's decision.
+"""
+import argparse
+import os
+import subprocess
+import sys
+import tempfile
+
+MODEL = os.environ.get("HARNESS_WHISPER_MODEL", "small.en")
+MODELS_DIR = os.environ.get("HARNESS_WHISPER_DIR", "/opt/whisper-models")
+
+
+def to_wav16k(path):
+    handle, wav = tempfile.mkstemp(suffix=".wav")
+    os.close(handle)
+    result = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", path, "-vn", "-ac", "1", "-ar", "16000",
+         "-f", "wav", "-y", wav],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        os.unlink(wav)
+        sys.exit(f"could not read audio from {path}: {result.stderr.strip()[-300:]}")
+    return wav
+
+
+def srt_time(seconds):
+    ms = max(0, int(round(seconds * 1000)))
+    h, ms = divmod(ms, 3600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("file")
+    parser.add_argument("--srt", action="store_true", help="emit SRT instead of plain lines")
+    parser.add_argument("--start", type=float, help="only from this second")
+    parser.add_argument("--end", type=float, help="only up to this second")
+    args = parser.parse_args()
+
+    if not os.path.exists(args.file):
+        sys.exit(f"no such file: {args.file}")
+
+    source = args.file
+    trimmed = None
+    if args.start is not None or args.end is not None:
+        handle, trimmed = tempfile.mkstemp(suffix=os.path.splitext(source)[1] or ".mp4")
+        os.close(handle)
+        cmd = ["ffmpeg", "-v", "error"]
+        if args.start is not None:
+            cmd += ["-ss", str(args.start)]
+        if args.end is not None:
+            cmd += ["-to", str(args.end)]
+        cmd += ["-i", source, "-c", "copy", "-y", trimmed]
+        subprocess.run(cmd, check=True, capture_output=True)
+        source = trimmed
+
+    wav = to_wav16k(source)
+    try:
+        # stderr is redirected because whisper.cpp prints a model banner at the
+        # C level that Python logging cannot suppress.
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        saved = os.dup(2)
+        os.dup2(devnull, 2)
+        try:
+            from pywhispercpp.model import Model
+            model = Model(MODEL, models_dir=MODELS_DIR, print_realtime=False,
+                          print_progress=False, print_timestamps=False)
+            segments = model.transcribe(wav)
+        finally:
+            os.dup2(saved, 2)
+            os.close(saved)
+            os.close(devnull)
+    finally:
+        os.unlink(wav)
+        if trimmed:
+            os.unlink(trimmed)
+
+    offset = args.start or 0.0
+    lines = [(s.t0 / 100.0 + offset, s.t1 / 100.0 + offset, (s.text or "").strip())
+             for s in segments if (s.text or "").strip()]
+
+    if not lines:
+        print("[no speech detected]")
+        return
+
+    for i, (start, end, text) in enumerate(lines, start=1):
+        if args.srt:
+            print(f"{i}\n{srt_time(start)} --> {srt_time(end)}\n{text}\n")
+        else:
+            print(f"[{start:.2f} -> {end:.2f}] {text}")
+
+
+if __name__ == "__main__":
+    main()
