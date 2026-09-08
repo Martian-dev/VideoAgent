@@ -37,8 +37,11 @@ class WorldState:
     @classmethod
     def observe(cls, output_path, work_dir):
         artifact_hash, duration = "", 0.0
-        output = Path(output_path)
-        if output.is_file() and output.stat().st_size:
+        # The output path is often unknown until the model submits: the task
+        # names it, not the harness. Until then, work-dir activity carries the
+        # progress signal on its own.
+        output = Path(output_path) if output_path else None
+        if output is not None and output.is_file() and output.stat().st_size:
             digest = hashlib.sha1()
             with output.open("rb") as handle:
                 # The head is enough to notice a re-render and avoids hashing
@@ -56,8 +59,8 @@ class WorldState:
 @dataclass
 class Progress:
     """Tracks whether each turn moved the world or the model's information."""
-    output_path: str
-    work_dir: str
+    output_path: str = None
+    work_dir: str = "."
     grace_turns: int = 8
     repeat_threshold: int = 3
     idle_limit: int = 12

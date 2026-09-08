@@ -11,11 +11,13 @@ from harness import loop, prompt, trace
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="harness", description=__doc__)
-    parser.add_argument("--source-dir", required=True, help="directory holding the source media")
+    parser.add_argument("--source-dir", default=None,
+                        help="optional; normally the instruction names the source")
     parser.add_argument("--instruction", required=True, help="path to the task instruction")
     parser.add_argument("--work-dir", default="/app/work", help="writable scratch space")
-    parser.add_argument("--output", default="/app/output/final_video.mp4",
-                        help="the deliverable; nothing else is written beside it")
+    parser.add_argument("--output", default=None,
+                        help="optional; where an accepted submission is delivered. "
+                             "Omit and the submitted path is the deliverable.")
     parser.add_argument("--runs-dir", default="/app/runs",
                         help="where trace.jsonl and trajectory.json go, kept out "
                              "of the graded output directory")
@@ -43,13 +45,14 @@ def main(argv=None):
 
     work_dir = Path(args.work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
-    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
 
     instruction = Path(args.instruction).read_text(encoding="utf-8").strip()
     system = prompt.build(
-        source_dir=args.source_dir, work_dir=args.work_dir,
-        output_path=args.output, max_seconds=args.max_seconds,
+        work_dir=args.work_dir, max_seconds=args.max_seconds,
         max_view_mb=args.max_view_mb,
+        source_dir=args.source_dir, output_path=args.output,
     )
 
     client = OpenAI(api_key=api_key,

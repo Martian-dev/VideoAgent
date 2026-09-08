@@ -21,10 +21,8 @@ AVAILABLE COMMANDS
   standard POSIX utilities (ls, cat, mkdir, cp, mv, rm, head, grep, ...)
 
 ENVIRONMENT
-  Source files:  {source_dir}
   Working dir:   {work_dir}   (writable scratch space)
-  Output:        {output_path}
-
+{paths}
 LIMITS
   {max_seconds} seconds of wall-clock. Each view is limited to {max_view_mb} MB;
   larger files must be made smaller with ffmpeg first.
@@ -33,8 +31,24 @@ You cannot hear audio. `transcribe` is how you access speech.
 Call submit(path) when the result is ready."""
 
 
-def build(source_dir, work_dir, output_path, max_seconds, max_view_mb):
+def build(work_dir, max_seconds, max_view_mb, source_dir=None, output_path=None):
+    """Render the system prompt.
+
+    source_dir and output_path are optional and normally omitted. The task
+    instruction states where the material is and where the result goes, so
+    repeating it here is the harness restating the task - and in a real Harbor
+    trial only the instruction is passed, with no way to supply paths anyway.
+    Give them only when a caller genuinely has them out of band.
+    """
+    lines = []
+    if source_dir:
+        lines.append(f"  Source files:  {source_dir}")
+    if output_path:
+        lines.append(f"  Output:        {output_path}")
+    if not lines:
+        lines.append("  The task below names the files to work on and where the "
+                     "result goes.")
     return SYSTEM.format(
-        source_dir=source_dir, work_dir=work_dir, output_path=output_path,
+        work_dir=work_dir, paths="\n".join(lines) + "\n",
         max_seconds=max_seconds, max_view_mb=max_view_mb,
     )
