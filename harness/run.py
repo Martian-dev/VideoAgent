@@ -84,6 +84,8 @@ def main(argv=None):
     # same as an edit that was made and judged badly.
     print(f"\nsubmitted={bool(submitted)}  termination={termination}")
     print(f"path={submitted}")
+    if run.delivered_elsewhere:
+        print(f"delivered_elsewhere=True  (harness copied it to {args.output})")
     print(f"trace summary: {recorder.summary()}")
     print(f"trace={trace_path}  trajectory={trajectory_path}")
     return 0 if submitted else 1

@@ -38,6 +38,7 @@ class Run:
             {"role": "user", "content": instruction},
         ]
         self.submitted = None
+        self.delivered_elsewhere = False
         self.stop_reason = None
         self.allow_rewind = allow_rewind
         self.trajectory_path = trajectory_path
@@ -86,10 +87,13 @@ class Run:
 
     def _do_submit(self, args):
         path = args.get("path", "")
-        ok, detail = tools.check_submission(path, self.work_dir)
-        self.trace.write("submit", path=path, ok=ok, detail=detail)
+        ok, detail, elsewhere = tools.check_submission(
+            path, self.work_dir, self.output_path)
+        self.trace.write("submit", path=path, ok=ok, detail=detail,
+                         delivered_elsewhere=elsewhere)
         if ok:
             self.submitted = path
+            self.delivered_elsewhere = elsewhere
             self.stop_reason = "submitted"
             return f"Accepted: {detail}", None
         return (f"Rejected: {detail}. Fix it and call submit again.", None)
@@ -195,6 +199,7 @@ class Run:
                     self.trace.write("trajectory_failed", error=str(e)[:200])
             self.trace.write("end", termination=self.stop_reason,
                              submitted=bool(self.submitted), path=self.submitted,
+                             delivered_elsewhere=self.delivered_elsewhere,
                              rewinds=self.rewinds,
                              **self.budget.state(), **self.progress.state())
         return self.submitted, self.stop_reason

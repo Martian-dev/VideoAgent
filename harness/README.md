@@ -167,12 +167,21 @@ anyone reads a trajectory for.
 
 ### Outcome reporting
 
-Two fields, never merged, following Terminal-Bench's `is_resolved` + `FailureMode`:
+Three fields, never merged, following Terminal-Bench's `is_resolved` +
+`FailureMode`:
 
 - `submitted` — boolean
 - `termination` — `SUBMITTED` · `TIMEOUT` · `COST` · `TOO_MANY_ERRORS` · `STALLED` · `ABANDONED`
+- `delivered_elsewhere` — boolean
 
 A run that timed out is not a bad edit. Pooling those makes the numbers lie.
+
+`delivered_elsewhere` is the same argument one level down. Given `--output`, an
+accepted submission is copied there if it is not already there — the grader
+looks at one agreed location, and a good edit abandoned in the scratch dir would
+score as no edit at all. But when the task instruction names that path, putting
+the file there is part of what was asked, so a run the harness had to rescue is
+not the same as one that landed it. The copy happens; the flag says it happened.
 
 ## A verified run
 

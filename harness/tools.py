@@ -4,6 +4,7 @@ Descriptions are factual: what the tool does and what it returns. None of them
 say anything about video editing, which segments matter, or how to approach a
 task - the model brings all of that.
 """
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -120,17 +121,45 @@ def run_view(paths, cwd, max_bytes):
     return looks, ("; ".join(errors) if errors else None)
 
 
-def check_submission(path, cwd):
-    """Verify a submitted file exists and is playable. Returns (ok, detail)."""
+def check_submission(path, cwd, output_path=None):
+    """Verify a submitted file exists and is playable.
+
+    Returns (ok, detail, delivered_elsewhere).
+
+    On acceptance the file is delivered to `output_path` if it is not already
+    there. Whoever reads the result - a grader, a verifier - looks at one agreed
+    location, and a good edit left in the scratch dir would score as no edit at
+    all. Putting the accepted file where it was asked for is protocol, not an
+    editorial decision, so it stays inside the harness.
+
+    But delivering it and saying nothing would hide a real result. When the
+    instruction names the output path, putting the file there is part of what
+    the task asked for, and a run that had to be rescued did not do that. So the
+    relocation is reported rather than absorbed: `delivered_elsewhere` is True
+    when the harness had to move the file, and the analysis can tell those runs
+    apart from the ones that landed it themselves.
+    """
     candidate = Path(path)
     if not candidate.is_absolute():
         candidate = Path(cwd) / candidate
     if not candidate.exists():
-        return False, f"{path}: no such file"
+        return False, f"{path}: no such file", False
     if candidate.stat().st_size == 0:
-        return False, f"{path}: file is empty"
+        return False, f"{path}: file is empty", False
 
     duration = media.probe_duration(candidate)
     if duration is None:
-        return False, f"{path}: ffprobe cannot read a duration; is it a valid media file?"
-    return True, f"{path}: {duration:.1f}s, {candidate.stat().st_size / 1e6:.1f} MB"
+        return (False,
+                f"{path}: ffprobe cannot read a duration; is it a valid media file?",
+                False)
+
+    detail = f"{path}: {duration:.1f}s, {candidate.stat().st_size / 1e6:.1f} MB"
+    delivered_elsewhere = False
+    if output_path:
+        target = Path(output_path)
+        if candidate.resolve() != target.resolve():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(candidate, target)
+            detail += f"; delivered to {target}"
+            delivered_elsewhere = True
+    return True, detail, delivered_elsewhere
