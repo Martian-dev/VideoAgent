@@ -14,8 +14,11 @@ def main(argv=None):
     parser.add_argument("--source-dir", required=True, help="directory holding the source media")
     parser.add_argument("--instruction", required=True, help="path to the task instruction")
     parser.add_argument("--work-dir", default="/app/work", help="writable scratch space")
-    parser.add_argument("--output", default="/app/output/final_video.mp4")
-    parser.add_argument("--trace", default="/app/output/trace.jsonl")
+    parser.add_argument("--output", default="/app/output/final_video.mp4",
+                        help="the deliverable; nothing else is written beside it")
+    parser.add_argument("--runs-dir", default="/app/runs",
+                        help="where trace.jsonl and trajectory.json go, kept out "
+                             "of the graded output directory")
     parser.add_argument("--max-seconds", type=int, default=3600,
                         help="wall-clock bound (default 1 hour)")
     parser.add_argument("--max-cost", type=float, default=5.0,
@@ -54,7 +57,11 @@ def main(argv=None):
                         "MONTAGE_BASE_URL", "https://api.meta.ai/v1"))
     model = args.model or os.environ.get("MONTAGE_MODEL", "muse-spark-1.2-contributor")
 
-    recorder = trace.Trace(args.trace)
+    runs_dir = Path(args.runs_dir)
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    trace_path = runs_dir / "trace.jsonl"
+    trajectory_path = runs_dir / "trajectory.json"
+    recorder = trace.Trace(trace_path)
     run = loop.Run(
         client=client, model=model, system=system, instruction=instruction,
         work_dir=work_dir, output_path=args.output,
@@ -63,16 +70,19 @@ def main(argv=None):
                                  max_errors=args.max_errors),
         trace=recorder, max_view_bytes=args.max_view_mb * 1024 * 1024,
         keep_last_looks=args.keep_looks, allow_rewind=not args.no_rewind,
+        trajectory_path=trajectory_path,
     )
 
     print(f"model={model}  max_seconds={args.max_seconds}  "
-          f"max_cost=${args.max_cost}  trace={args.trace}")
+          f"max_cost=${args.max_cost}")
+    print(f"runs_dir={runs_dir}")
     submitted, termination = run.run()
     # The score and the reason stay separate: a run that timed out is not the
     # same as an edit that was made and judged badly.
     print(f"\nsubmitted={bool(submitted)}  termination={termination}")
     print(f"path={submitted}")
     print(f"trace summary: {recorder.summary()}")
+    print(f"trace={trace_path}  trajectory={trajectory_path}")
     return 0 if submitted else 1
 
 

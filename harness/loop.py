@@ -14,6 +14,7 @@ import json
 from openai import OpenAI
 
 from harness import media, progress as progress_mod, tools
+from harness import trace as trace_mod
 from harness.budget import Termination
 
 
@@ -22,7 +23,7 @@ class Run:
 
     def __init__(self, client, model, system, instruction, work_dir, output_path,
                  budget, trace, max_view_bytes=media.MAX_BYTES, keep_last_looks=4,
-                 allow_rewind=True):
+                 allow_rewind=True, trajectory_path=None):
         self.client = client
         self.model = model
         self.work_dir = work_dir
@@ -39,6 +40,7 @@ class Run:
         self.submitted = None
         self.stop_reason = None
         self.allow_rewind = allow_rewind
+        self.trajectory_path = trajectory_path
         self.rewinds = 0
         self.progress = progress_mod.Progress(output_path=output_path,
                                               work_dir=str(work_dir))
@@ -184,6 +186,13 @@ class Run:
             self.trace.write("error", type=type(e).__name__, message=str(e)[:800])
             raise
         finally:
+            if self.trajectory_path:
+                # Written in `finally` so a crashed or killed run still leaves a
+                # readable transcript behind.
+                try:
+                    trace_mod.save_trajectory(self.messages, self.trajectory_path)
+                except Exception as e:
+                    self.trace.write("trajectory_failed", error=str(e)[:200])
             self.trace.write("end", termination=self.stop_reason,
                              submitted=bool(self.submitted), path=self.submitted,
                              rewinds=self.rewinds,
