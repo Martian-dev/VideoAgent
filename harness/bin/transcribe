@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 
-MODEL = os.environ.get("HARNESS_WHISPER_MODEL", "small.en")
+MODEL = os.environ.get("HARNESS_WHISPER_MODEL", "medium.en-q5_0")
 MODELS_DIR = os.environ.get("HARNESS_WHISPER_DIR", "/opt/whisper-models")
 
 

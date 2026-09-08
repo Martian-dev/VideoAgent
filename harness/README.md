@@ -48,13 +48,32 @@ Or on a host directly:
 ```bash
 pip install openai pywhispercpp
 apt install ffmpeg fonts-dejavu-core
-python -c "from pywhispercpp.model import Model; Model('small.en', models_dir='/opt/whisper-models')"
+python -c "from pywhispercpp.model import Model; Model('medium.en-q5_0', models_dir='/opt/whisper-models')"
 install -m755 harness/bin/transcribe /usr/local/bin/transcribe
 export META_AI_API_KEY=...
 ```
 
 The container is `python:3.11-slim` plus ffmpeg, fonts, two pip packages and a
-~490 MB whisper model. **No torch, no CUDA, no GPU.**
+~539 MB whisper model. **No torch, no CUDA, no GPU.**
+
+### Whisper model choice
+
+`medium.en-q5_0` by default. Measured on a 16-core EPYC-Rome (avx2, no avx512)
+over 122 s of real narration:
+
+| Model | Time | Throughput | First segment |
+|---|---|---|---|
+| `medium.en-q5_0` | 80.4 s | 1.5x realtime | `In 1971, William Friedkin directed "The French Conne...` |
+| `small.en` | 35.2 s | 3.5x realtime | `[Music]` |
+
+`small.en` is more than twice as fast and missed the opening narration entirely,
+labelling it `[Music]`. On a narration-driven edit that is the difference between
+having the script and not, so the slower model is the default.
+
+Budget accordingly: at 1.5x realtime a one-hour source costs ~40 minutes of
+transcription, which is most of the default 3600 s wall clock. Override with
+`HARNESS_WHISPER_MODEL` — the model only pays this cost for the spans it chooses
+to transcribe, not the whole source, unless it asks for the whole source.
 
 ## The tool surface
 
@@ -112,7 +131,7 @@ it. Terminal-Bench bounds on wall-clock alone for the same reason.
 | Bound | Default | Flag |
 |---|---|---|
 | Wall clock | 3600s | `--max-seconds` |
-| Cost | $5.00 | `--max-cost` |
+| Cost | $6.00 | `--max-cost` |
 | Consecutive tool errors | 10 | `--max-errors` |
 | Stall | see below | `--no-rewind` to disable recovery |
 

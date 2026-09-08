@@ -10,10 +10,10 @@ RUN pip install --no-cache-dir openai>=1.60 pywhispercpp>=1.5
 
 # Bake the whisper model so a run never pauses to download it.
 ENV HARNESS_WHISPER_DIR=/opt/whisper-models
-ENV HARNESS_WHISPER_MODEL=small.en
+ENV HARNESS_WHISPER_MODEL=medium.en-q5_0
 RUN mkdir -p /opt/whisper-models && python -c "\
 from pywhispercpp.model import Model; \
-Model('small.en', models_dir='/opt/whisper-models')" 2>/dev/null || true
+Model('medium.en-q5_0', models_dir='/opt/whisper-models')" 2>/dev/null || true
 
 COPY bin/transcribe /usr/local/bin/transcribe
 RUN chmod +x /usr/local/bin/transcribe

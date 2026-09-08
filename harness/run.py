@@ -23,7 +23,7 @@ def main(argv=None):
                              "of the graded output directory")
     parser.add_argument("--max-seconds", type=int, default=3600,
                         help="wall-clock bound (default 1 hour)")
-    parser.add_argument("--max-cost", type=float, default=5.0,
+    parser.add_argument("--max-cost", type=float, default=6.0,
                         help="USD spend cap")
     parser.add_argument("--max-errors", type=int, default=10,
                         help="consecutive failing tool calls before giving up")

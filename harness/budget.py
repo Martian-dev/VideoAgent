@@ -30,7 +30,7 @@ class Termination:
 
 
 class Budget:
-    def __init__(self, max_seconds=3600, max_cost_usd=5.0, max_errors=10,
+    def __init__(self, max_seconds=3600, max_cost_usd=6.0, max_errors=10,
                  safety_turns=500):
         self.max_seconds = max_seconds
         self.max_cost_usd = max_cost_usd
