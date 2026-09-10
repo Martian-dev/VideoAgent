@@ -6,7 +6,7 @@ from pathlib import Path
 from openai import OpenAI
 
 from harness import budget as budget_mod
-from harness import loop, prompt, trace
+from harness import loop, media, prompt, trace
 
 
 def main(argv=None):
@@ -32,6 +32,9 @@ def main(argv=None):
     parser.add_argument("--max-view-mb", type=int, default=24)
     parser.add_argument("--keep-looks", type=int, default=4,
                         help="how many recent looks stay in context")
+    parser.add_argument("--max-images", type=int, default=media.MAX_IMAGES,
+                        help="images per request; the API refuses more than 50, "
+                             "and larger views are delivered in batches")
     parser.add_argument("--model", help="override the model id")
     parser.add_argument("--base-url", help="override the API base url")
     parser.add_argument("--api-key-env", default="META_AI_API_KEY")
@@ -51,7 +54,7 @@ def main(argv=None):
     instruction = Path(args.instruction).read_text(encoding="utf-8").strip()
     system = prompt.build(
         work_dir=args.work_dir, max_seconds=args.max_seconds,
-        max_view_mb=args.max_view_mb,
+        max_view_mb=args.max_view_mb, max_images=args.max_images,
         source_dir=args.source_dir, output_path=args.output,
     )
 
@@ -72,7 +75,8 @@ def main(argv=None):
                                  max_cost_usd=args.max_cost,
                                  max_errors=args.max_errors),
         trace=recorder, max_view_bytes=args.max_view_mb * 1024 * 1024,
-        keep_last_looks=args.keep_looks, allow_rewind=not args.no_rewind,
+        keep_last_looks=args.keep_looks, max_images=args.max_images,
+        allow_rewind=not args.no_rewind,
         trajectory_path=trajectory_path,
     )
 

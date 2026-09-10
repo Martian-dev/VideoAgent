@@ -6,6 +6,7 @@ no hints about what makes an edit good. The task instruction supplies the goal;
 everything the model does to reach it is the thing being measured, so any advice
 here would contaminate the result.
 """
+from harness.media import MAX_IMAGES
 
 SYSTEM = """You are working in a Linux container with a shell.
 
@@ -25,13 +26,16 @@ ENVIRONMENT
 {paths}
 LIMITS
   {max_seconds} seconds of wall-clock. Each view is limited to {max_view_mb} MB;
-  larger files must be made smaller with ffmpeg first.
+  larger files must be made smaller with ffmpeg first. At most {max_images}
+  images reach you per turn; a view of more arrives in batches over the
+  following turns.
 
 You cannot hear audio. `transcribe` is how you access speech.
 Call submit(path) when the result is ready."""
 
 
-def build(work_dir, max_seconds, max_view_mb, source_dir=None, output_path=None):
+def build(work_dir, max_seconds, max_view_mb, source_dir=None, output_path=None,
+          max_images=MAX_IMAGES):
     """Render the system prompt.
 
     source_dir and output_path are optional and normally omitted. The task
@@ -50,5 +54,5 @@ def build(work_dir, max_seconds, max_view_mb, source_dir=None, output_path=None)
                      "result goes.")
     return SYSTEM.format(
         work_dir=work_dir, paths="\n".join(lines) + "\n",
-        max_seconds=max_seconds, max_view_mb=max_view_mb,
+        max_seconds=max_seconds, max_view_mb=max_view_mb, max_images=max_images,
     )
