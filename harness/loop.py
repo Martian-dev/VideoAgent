@@ -3,7 +3,7 @@
 Call the model, execute what it asks for, hand back what happened, repeat. The
 harness makes no decisions about the task: it does not summarise, plan, retry
 failed edits, or steer. Its only judgement calls are mechanical - when a look is
-too old to keep in context, how many images fit in one request, and when the
+too old to keep in context, how much media fits in one request, and when the
 budget is spent.
 
 One wrinkle shapes the whole loop: the Meta Model API rejects content blocks
@@ -20,21 +20,26 @@ from harness import trace as trace_mod
 from harness.budget import Termination
 
 _LIMIT = re.compile(r"maximum of\s+(\d+)", re.IGNORECASE)
-_CONTAINED = re.compile(r"(\d+)\s+images?\b", re.IGNORECASE)
+_CONTAINED = re.compile(r"(\d+)\s+(image|video)s?\b", re.IGNORECASE)
 
 
-def image_limit(error):
-    """(images the API counted or None, its limit) when `error` is the
-    per-request image cap - "request contains 60 images, exceeding the maximum
-    of 50 allowed per request" - else None."""
+def media_limit(error):
+    """(kind, count the API reported or None, its limit) when `error` is a
+    per-request media cap - "request contains 60 images, exceeding the maximum
+    of 50 allowed per request" - else None. kind is "image" or "video"."""
     if getattr(error, "status_code", None) != 400:
         return None
     text = str(error)
     limit = _LIMIT.search(text)
-    if not limit or "image" not in text.lower():
+    if not limit:
         return None
     contained = _CONTAINED.search(text)
-    return (int(contained.group(1)) if contained else None), int(limit.group(1))
+    if contained:
+        return contained.group(2).lower(), int(contained.group(1)), int(limit.group(1))
+    for kind in ("video", "image"):
+        if kind in text.lower():
+            return kind, None, int(limit.group(1))
+    return None
 
 
 class Run:
@@ -42,8 +47,8 @@ class Run:
 
     def __init__(self, client, model, system, instruction, work_dir, output_path,
                  budget, trace, max_view_bytes=media.MAX_BYTES, keep_last_looks=4,
-                 max_images=media.MAX_IMAGES, allow_rewind=True,
-                 trajectory_path=None):
+                 max_images=media.MAX_IMAGES, max_videos=media.MAX_VIDEOS,
+                 allow_rewind=True, trajectory_path=None):
         self.client = client
         self.model = model
         self.work_dir = work_dir
@@ -53,7 +58,8 @@ class Run:
         self.max_view_bytes = max_view_bytes
         self.keep_last_looks = keep_last_looks
         self.max_images = max_images
-        self.deliveries = media.Deliveries(max_images)
+        self.max_videos = max_videos
+        self.deliveries = media.Deliveries(max_images, max_videos)
 
         self.messages = [
             {"role": "system", "content": system},
@@ -71,22 +77,22 @@ class Run:
     # -- model ------------------------------------------------------------
 
     def _call_model(self):
-        """One request, kept under the per-request image limit.
+        """One request, kept under the per-request media limits.
 
-        The bound is enforced here, where the request is built, so no path into
-        the history - several looks in one turn, a rewind - can exceed it. The
-        number is the API's, though, not ours: if a request is still refused
-        for images, lower the bound to what the API reported and retry, then
-        retry once more with every image dropped. The model sees a marker where
-        each one was. A transport limit is never a reason to end the run.
+        The bounds are enforced here, where the request is built, so no path
+        into the history - several looks in one turn, a rewind - can exceed
+        them. The numbers are the API's, though, not ours: if a request is still
+        refused for images or videos, lower that bound to what the API reported
+        and retry, then retry once more with all media dropped. The model sees a
+        marker where each one was. A transport limit is never a reason to end
+        the run.
         """
-        evicted = media.evict(self.messages, keep_last=self.keep_last_looks,
-                              max_images=self.max_images)
+        evicted = self._evict()
         if evicted:
             self.trace.write("evict", blocks=evicted)
 
         for attempt in range(3):
-            images = media.count_images(self.messages)
+            images, videos = media.count_media(self.messages)
             try:
                 response = self.client.chat.completions.create(
                     model=self.model,
@@ -97,28 +103,39 @@ class Run:
                 )
                 break
             except Exception as error:
-                refused = image_limit(error)
+                refused = media_limit(error)
                 if refused is None or attempt == 2:
                     raise
-                counted, limit = refused
-                self.max_images = self.deliveries.max_images = min(self.max_images, limit)
-                marker = f"[dropped: the API accepts at most {limit} images per request]"
-                dropped = 0
-                if attempt == 0:
-                    dropped = media.evict(self.messages, keep_last=self.keep_last_looks,
-                                          max_images=self.max_images, marker=marker)
+                kind, counted, limit = refused
+                self._lower_limit(kind, limit)
+                marker = f"[dropped: the API accepts at most {limit} {kind}s per request]"
+                dropped = self._evict(marker) if attempt == 0 else 0
                 # Nothing to trim means the API counts something we don't.
                 if not dropped:
                     dropped = media.evict(self.messages, keep_last=0, marker=marker)
-                self.trace.write("image_limit_retry", attempt=attempt + 1,
-                                 sent=images, api_counted=counted, api_limit=limit,
-                                 max_images=self.max_images, dropped=dropped)
+                self.trace.write("media_limit_retry", attempt=attempt + 1, media_kind=kind,
+                                 sent_images=images, sent_videos=videos,
+                                 api_counted=counted, api_limit=limit,
+                                 max_images=self.max_images,
+                                 max_videos=self.max_videos, dropped=dropped)
 
         usage = response.usage
         if usage:
             self.budget.spend(input_tokens=usage.prompt_tokens or 0,
                               output_tokens=usage.completion_tokens or 0)
-        return response.choices[0], usage, images
+        return response.choices[0], usage, (images, videos)
+
+    def _evict(self, marker=media.EVICTED):
+        return media.evict(self.messages, keep_last=self.keep_last_looks,
+                           max_images=self.max_images, max_videos=self.max_videos,
+                           marker=marker)
+
+    def _lower_limit(self, kind, limit):
+        limit = max(1, limit)
+        if kind == "video":
+            self.max_videos = self.deliveries.max_videos = min(self.max_videos, limit)
+        else:
+            self.max_images = self.deliveries.max_images = min(self.max_images, limit)
 
     # -- tool dispatch ----------------------------------------------------
 
@@ -151,11 +168,12 @@ class Run:
         looks = self.deliveries.release()
         if not looks:
             return None
-        remaining = self.deliveries.images_pending()
-        self.messages.append(media.user_message(looks, remaining=remaining))
+        queued = self.deliveries.queued()
+        self.messages.append(media.user_message(looks, queued=queued))
         paths = [look.path for look in looks]
-        self.trace.write("deliver", paths=paths, remaining=remaining,
-                         images=sum(look.kind == "image" for look in looks))
+        self.trace.write("deliver", paths=paths, queued=queued,
+                         images=sum(look.kind == "image" for look in looks),
+                         videos=sum(look.kind == "video" for look in looks))
         return ("deliver", json.dumps(paths), "")
 
     def _do_submit(self, args):
@@ -189,7 +207,7 @@ class Run:
 
     def step(self):
         """One turn. Returns False when the run should stop."""
-        choice, usage, images = self._call_model()
+        choice, usage, (images, videos) = self._call_model()
         message = choice.message
         self.budget.spend(turns=1)
 
@@ -199,7 +217,7 @@ class Run:
             tool_calls=[c.function.name for c in (message.tool_calls or [])],
             prompt_tokens=getattr(usage, "prompt_tokens", None),
             completion_tokens=getattr(usage, "completion_tokens", None),
-            images_in_context=images,
+            images_in_context=images, videos_in_context=videos,
         )
 
         self.messages.append(message.model_dump(exclude_none=True))

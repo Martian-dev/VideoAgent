@@ -35,6 +35,8 @@ def main(argv=None):
     parser.add_argument("--max-images", type=int, default=media.MAX_IMAGES,
                         help="images per request; the API refuses more than 50, "
                              "and larger views are delivered in batches")
+    parser.add_argument("--max-videos", type=int, default=media.MAX_VIDEOS,
+                        help="videos per request; the API refuses more than 5")
     parser.add_argument("--model", help="override the model id")
     parser.add_argument("--base-url", help="override the API base url")
     parser.add_argument("--api-key-env", default="META_AI_API_KEY")
@@ -55,7 +57,7 @@ def main(argv=None):
     system = prompt.build(
         work_dir=args.work_dir, max_seconds=args.max_seconds,
         max_view_mb=args.max_view_mb, max_images=args.max_images,
-        source_dir=args.source_dir, output_path=args.output,
+        max_videos=args.max_videos, source_dir=args.source_dir, output_path=args.output,
     )
 
     client = OpenAI(api_key=api_key,
@@ -76,7 +78,7 @@ def main(argv=None):
                                  max_errors=args.max_errors),
         trace=recorder, max_view_bytes=args.max_view_mb * 1024 * 1024,
         keep_last_looks=args.keep_looks, max_images=args.max_images,
-        allow_rewind=not args.no_rewind,
+        max_videos=args.max_videos, allow_rewind=not args.no_rewind,
         trajectory_path=trajectory_path,
     )
 

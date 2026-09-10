@@ -92,7 +92,7 @@ extracts what it wants to look at using ffmpeg; the harness only delivers it.**
 
 ### The system prompt
 
-163 words. A factual inventory of tools, available commands, paths and limits.
+166 words. A factual inventory of tools, available commands, paths and limits.
 It says nothing about editing, what to look at, how to sample, or what makes a
 good cut. The task instruction supplies the goal; every step toward it is the
 thing being measured.
@@ -111,22 +111,24 @@ from documentation, and they shape the loop:
 | Media inside a `role:"tool"` result | **rejected (400)** |
 | `video_url` mid-conversation | works, and perceives motion across frames |
 | Images per request | **at most 50 (400 above that)** |
+| Videos per request | **at most 5 (400 above that)** |
 | Audio input | **not perceived** |
 
 Because tool results are text-only, a `view` costs two messages: a text stub as
 the tool result, then a user message carrying the actual media.
 
-The image cap is per request, and history is resent every turn, so it bounds
+Both caps are per request, and history is resent every turn, so they bound
 everything in context, not just the latest look — four views of 15 frames is 60
-images. The harness keeps every request at `--max-images` (default 45, headroom
-under 50), evicting the oldest images first, and enforces it where the request
-is built. A `view` of more than that is not refused: its images are queued and
-delivered one batch per turn, and the tool result says how many turns that
-takes. If a request is still refused for images — the limit differs by model, or
-counts something the harness doesn't — the harness lowers its bound to the
-number the API reported and retries, then retries once more with every image
-dropped, leaving a marker where each was. The run never ends on this error; the
-`image_limit_retry` trace event records that it happened.
+images. The harness keeps every request within `--max-images` (default 45,
+headroom under 50) and `--max-videos` (default 5), evicting the oldest first,
+and enforces both where the request is built. A `view` of more than that is not
+refused: its files are queued and delivered one batch per turn, and the tool
+result says how many turns that takes. If a request is still refused for either
+— the limit differs by model, or counts something the harness doesn't — the
+harness lowers that bound to the number the API reported and retries, then
+retries once more with all media dropped, leaving a marker where each file was.
+The run never ends on this error; the `media_limit_retry` trace event records
+that it happened.
 
 The audio finding is the dangerous one. `audio_url` is rejected outright, but
 `input_audio` and `file` blocks are **accepted and silently ignored** — the model
@@ -240,8 +242,9 @@ pipeline produced 76.4s.
 - **Nothing here has been rubric-scored.** Every number above is mechanical:
   duration, cost, gates. "Closest to the reference length" is not "best edit".
 - **A large view is paged, not seen at once.** The model never has more than
-  `--max-images` images in context together, so frames further apart than one
-  batch cannot be compared side by side unless the model combines them first.
+  `--max-images` images or `--max-videos` videos in context together, so files
+  further apart than one batch cannot be compared side by side unless the model
+  combines them first.
 - **Shell output is not stored in the trace**, only its length. The trajectory
   has the conversation; reconstructing exactly what a command printed needs the
   work dir.

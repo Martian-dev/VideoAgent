@@ -24,10 +24,12 @@ AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"}
 # spent in history, not just on the turn that took it.
 MAX_BYTES = 24 * 1024 * 1024
 
-# The API refuses a request carrying more than 50 images (400). History is resent
-# every turn, so that bounds everything in context, not just the latest look.
-# The default leaves headroom below it.
+# The API refuses a request carrying more than 50 images or 5 videos (400).
+# History is resent every turn, so those bound everything in context, not just
+# the latest look. The image default leaves headroom below its limit; the video
+# limit is too small to spare any.
 MAX_IMAGES = 45
+MAX_VIDEOS = 5
 
 MEDIA_TYPES = {"image_url", "video_url"}
 EVICTED = "[earlier look, no longer in context]"
@@ -128,60 +130,72 @@ def load(path, max_bytes=MAX_BYTES):
 
 
 class Deliveries:
-    """Looks waiting to go out, released at most `max_images` images per turn.
+    """Looks waiting to go out, released one request's worth per turn.
 
-    One request carries a bounded number of images, so a view of more than that
+    The API caps images and videos per request, so a view of more than that
     cannot be answered in a single message. Refusing it would make the model
     re-plan around a transport limit; instead the looks are paged, one batch per
-    turn, and eviction keeps each request under the limit. Videos ride along
-    uncounted - the API's limit is on images.
+    turn, and eviction keeps each request under both caps.
     """
 
-    def __init__(self, max_images=MAX_IMAGES):
+    def __init__(self, max_images=MAX_IMAGES, max_videos=MAX_VIDEOS):
         self.max_images = max_images
+        self.max_videos = max_videos
         self.pending = deque()
 
     def __bool__(self):
         return bool(self.pending)
 
-    def images_pending(self):
-        return sum(1 for look in self.pending if look.kind == "image")
+    def _batches(self, looks):
+        """Split looks, in order, into what one request can carry."""
+        caps = {"image": self.max_images, "video": self.max_videos}
+        counts = dict.fromkeys(caps, 0)
+        batches, batch = [], []
+        for look in looks:
+            if counts[look.kind] >= caps[look.kind]:
+                batches.append(batch)
+                batch, counts = [], dict.fromkeys(caps, 0)
+            batch.append(look)
+            counts[look.kind] += 1
+        if batch:
+            batches.append(batch)
+        return batches
 
     def add(self, looks):
         """Queue looks. Returns a note saying when they arrive, or None when
         they all go out this turn."""
-        ahead = self.images_pending()
-        images = sum(1 for look in looks if look.kind == "image")
+        start = len(self.pending)
         self.pending.extend(looks)
-        if not images:
+        turns = [n for n, batch in enumerate(self._batches(self.pending))
+                 for _ in batch][start:]
+        if not turns or turns[-1] == 0:
             return None
-        first = ahead // self.max_images
-        last = (ahead + images - 1) // self.max_images
-        if last == 0:
-            return None
-        head = (f"More than {self.max_images} images are queued and a request "
-                f"carries at most {self.max_images}, so they arrive "
-                f"{self.max_images} per turn")
+        first, last = turns[0], turns[-1]
+        head = (f"That is more than one request carries (at most "
+                f"{self.max_images} images and {self.max_videos} videos), so "
+                f"queued files arrive one batch per turn")
         if first == 0:
-            now = min(images, self.max_images - ahead)
             plural = "s" if last != 1 else ""
-            return (f"{head}: {now} of these in the message below, the rest over "
-                    f"the next {last} turn{plural}.")
+            return (f"{head}: {turns.count(0)} of these in the message below, "
+                    f"the rest over the next {last} turn{plural}.")
         if first == last:
             plural = "s" if first != 1 else ""
             return f"{head}: these arrive {first} turn{plural} from now."
         return f"{head}: these arrive over turns {first}-{last} from now."
 
     def release(self):
-        """This turn's batch: queued looks, in order, up to the image limit."""
-        batch, images = [], 0
-        while self.pending:
-            if self.pending[0].kind == "image":
-                if images >= self.max_images:
-                    break
-                images += 1
-            batch.append(self.pending.popleft())
-        return batch
+        """This turn's batch: queued looks, in order, within both caps."""
+        batches = self._batches(self.pending)
+        return [self.pending.popleft() for _ in batches[0]] if batches else []
+
+    def queued(self):
+        """What is still waiting, as text, or None when nothing is."""
+        parts = []
+        for kind in ("image", "video"):
+            n = sum(look.kind == kind for look in self.pending)
+            if n:
+                parts.append(f"{n} more {kind}{'s' if n != 1 else ''}")
+        return " and ".join(parts) or None
 
     def clear(self):
         self.pending.clear()
@@ -203,31 +217,32 @@ def stub(looks, error=None, note=None):
     return text
 
 
-def user_message(looks, remaining=0):
+def user_message(looks, queued=None):
     """The message that actually carries the media into context."""
     header = "Contents of " + ", ".join(look.path for look in looks)
-    if remaining:
-        plural = "s" if remaining != 1 else ""
-        header += f" ({remaining} more image{plural} queued for the following turns)"
+    if queued:
+        header += f" ({queued} queued for the following turns)"
     content = [{"type": "text", "text": header + ":"}]
     for look in looks:
         content.extend(look.blocks)
     return {"role": "user", "content": content}
 
 
-def count_images(messages):
-    """Image blocks across the whole history - what the API's limit counts."""
-    return sum(1 for message in messages
-               if isinstance(message.get("content"), list)
-               for part in message["content"] if part.get("type") == "image_url")
+def count_media(messages):
+    """(images, videos) across the whole history - what the API's limits count."""
+    kinds = [part.get("type") for message in messages
+             if isinstance(message.get("content"), list)
+             for part in message["content"]]
+    return kinds.count("image_url"), kinds.count("video_url")
 
 
-def evict(messages, keep_last=6, max_images=None, marker=EVICTED):
+def evict(messages, keep_last=6, max_images=None, max_videos=None, marker=EVICTED):
     """Drop media blocks from older turns, leaving a text marker in their place.
 
-    Two bounds, newest media kept first: the last `keep_last` looks (messages
-    carrying media), and at most `max_images` image blocks in total - the API
-    counts images per request, and a single look can carry dozens of them.
+    Three bounds, newest media kept first: the last `keep_last` looks (messages
+    carrying media), and at most `max_images` image blocks and `max_videos`
+    video blocks in total - the API counts each per request, and a single look
+    can carry dozens.
 
     History is resent every turn, so without this a dozen looks quietly consume
     the context window. Replacing them with a marker rather than deleting the
@@ -235,7 +250,9 @@ def evict(messages, keep_last=6, max_images=None, marker=EVICTED):
     forgetting - whether it takes notes or just looks again - something we
     measure rather than something we solve for it.
     """
-    looks = images = evicted = 0
+    caps = {"image_url": max_images, "video_url": max_videos}
+    kept = dict.fromkeys(caps, 0)
+    looks = evicted = 0
 
     for message in reversed(messages):
         content = message.get("content")
@@ -250,10 +267,9 @@ def evict(messages, keep_last=6, max_images=None, marker=EVICTED):
             kind = content[i].get("type")
             if kind not in MEDIA_TYPES:
                 continue
-            over = (kind == "image_url" and max_images is not None
-                    and images >= max_images)
+            over = caps[kind] is not None and kept[kind] >= caps[kind]
             if looks <= keep_last and not over:
-                images += kind == "image_url"
+                kept[kind] += 1
                 continue
             replacement[i] = {"type": "text", "text": marker}
             evicted += 1
