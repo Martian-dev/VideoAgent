@@ -3,8 +3,8 @@
 Call the model, execute what it asks for, hand back what happened, repeat. The
 harness makes no decisions about the task: it does not summarise, plan, retry
 failed edits, or steer. Its only judgement calls are mechanical - when a look is
-too old to keep in context, how much media fits in one request, and when the
-budget is spent.
+too old to keep in context, how much media fits in one request, how long to wait
+out a failing API, and when the budget is spent.
 
 One wrinkle shapes the whole loop: the Meta Model API rejects content blocks
 inside a role="tool" message. So a `view` costs two messages - a text stub as
@@ -12,12 +12,24 @@ the tool result, then a user message carrying the actual image or video.
 """
 import json
 import re
+import time
 
 from openai import OpenAI
 
 from harness import media, progress as progress_mod, tools
 from harness import trace as trace_mod
 from harness.budget import Termination
+
+# A failed request is retried this many times, waiting RETRY_BACKOFF_S and
+# doubling each time: 15, 30, 60, 120, 240 seconds, long enough to sit out an
+# outage of several minutes. Only when every retry has failed does the error end
+# the run.
+API_RETRIES = 5
+RETRY_BACKOFF_S = 15.0
+# The longest one model request may take, before the cap at the time left.
+# Observed calls take ~10s typically and 72s at worst, so this only ever
+# catches a request that has hung.
+REQUEST_TIMEOUT_S = 600.0
 
 _LIMIT = re.compile(r"maximum of\s+(\d+)", re.IGNORECASE)
 _CONTAINED = re.compile(r"(\d+)\s+(image|video)s?\b", re.IGNORECASE)
@@ -48,7 +60,9 @@ class Run:
     def __init__(self, client, model, system, instruction, work_dir, output_path,
                  budget, trace, max_view_bytes=media.MAX_BYTES, keep_last_looks=4,
                  max_images=media.MAX_IMAGES, max_videos=media.MAX_VIDEOS,
-                 allow_rewind=True, trajectory_path=None):
+                 allow_rewind=True, trajectory_path=None, api_retries=API_RETRIES,
+                 retry_backoff=RETRY_BACKOFF_S, request_timeout=REQUEST_TIMEOUT_S,
+                 command_timeout=tools.COMMAND_TIMEOUT_S):
         self.client = client
         self.model = model
         self.work_dir = work_dir
@@ -60,6 +74,11 @@ class Run:
         self.max_images = max_images
         self.max_videos = max_videos
         self.deliveries = media.Deliveries(max_images, max_videos)
+        self.api_retries = api_retries
+        self.retry_backoff = retry_backoff
+        self.api_retries_used = 0
+        self.request_timeout = request_timeout
+        self.command_timeout = command_timeout
 
         self.messages = [
             {"role": "system", "content": system},
@@ -77,7 +96,8 @@ class Run:
     # -- model ------------------------------------------------------------
 
     def _call_model(self):
-        """One request, kept under the per-request media limits.
+        """One request, kept under the per-request media limits and retried
+        through API failures.
 
         The bounds are enforced here, where the request is built, so no path
         into the history - several looks in one turn, a rewind - can exceed
@@ -86,12 +106,27 @@ class Run:
         and retry, then retry once more with all media dropped. The model sees a
         marker where each one was. A transport limit is never a reason to end
         the run.
+
+        Any other failure - a 500, a 400, a dropped connection - is retried
+        unchanged, up to `api_retries` times with exponential backoff. A retry
+        that succeeds carries on as if nothing happened; only when every one has
+        failed does the error end the run. The SDK's own retries are off (see
+        run.py), so this count is the only one.
+
+        None of it may outlast the run's wall clock, because whatever runs the
+        harness kills it at its own limit and the trajectory goes with it. Each
+        request's timeout is capped at the time left, and a retry the budget
+        cannot wait for is not attempted. Returns None when time runs out.
         """
         evicted = self._evict()
         if evicted:
             self.trace.write("evict", blocks=evicted)
 
-        for attempt in range(3):
+        media_retries = retries = 0
+        while True:
+            remaining = self.budget.remaining()
+            if remaining <= 0:
+                return None
             images, videos = media.count_media(self.messages)
             try:
                 response = self.client.chat.completions.create(
@@ -100,24 +135,39 @@ class Run:
                     tools=tools.SCHEMA,
                     tool_choice="auto",
                     temperature=1,
+                    timeout=min(self.request_timeout, remaining),
                 )
                 break
             except Exception as error:
                 refused = media_limit(error)
-                if refused is None or attempt == 2:
+                if refused is not None and media_retries < 2:
+                    kind, counted, limit = refused
+                    self._lower_limit(kind, limit)
+                    marker = f"[dropped: the API accepts at most {limit} {kind}s per request]"
+                    dropped = self._evict(marker) if media_retries == 0 else 0
+                    # Nothing to trim means the API counts something we don't.
+                    if not dropped:
+                        dropped = media.evict(self.messages, keep_last=0, marker=marker)
+                    media_retries += 1
+                    self.trace.write("media_limit_retry", attempt=media_retries,
+                                     media_kind=kind, sent_images=images,
+                                     sent_videos=videos, api_counted=counted,
+                                     api_limit=limit, max_images=self.max_images,
+                                     max_videos=self.max_videos, dropped=dropped)
+                    continue
+                if retries == self.api_retries:
                     raise
-                kind, counted, limit = refused
-                self._lower_limit(kind, limit)
-                marker = f"[dropped: the API accepts at most {limit} {kind}s per request]"
-                dropped = self._evict(marker) if attempt == 0 else 0
-                # Nothing to trim means the API counts something we don't.
-                if not dropped:
-                    dropped = media.evict(self.messages, keep_last=0, marker=marker)
-                self.trace.write("media_limit_retry", attempt=attempt + 1, media_kind=kind,
-                                 sent_images=images, sent_videos=videos,
-                                 api_counted=counted, api_limit=limit,
-                                 max_images=self.max_images,
-                                 max_videos=self.max_videos, dropped=dropped)
+                retries += 1
+                delay = self.retry_backoff * 2 ** (retries - 1)
+                failure = dict(attempt=retries, of=self.api_retries, delay_s=delay,
+                               status=getattr(error, "status_code", None),
+                               error=type(error).__name__, message=str(error)[:400])
+                if delay >= self.budget.remaining():
+                    self.trace.write("api_retry_out_of_time", **failure)
+                    return None
+                self.api_retries_used += 1
+                self.trace.write("api_retry", **failure)
+                time.sleep(delay)
 
         usage = response.usage
         if usage:
@@ -141,8 +191,15 @@ class Run:
 
     def _do_shell(self, args):
         command = args.get("command", "")
-        output, ok = tools.run_shell(command, self.work_dir)
-        self.trace.write("shell", command=command, ok=ok, chars=len(output))
+        # Capped at the time left, so no command can carry the run past its
+        # wall clock.
+        timeout = min(self.command_timeout, self.budget.remaining())
+        if timeout < 1:
+            output, ok = "[not run: the run's time is up]", False
+        else:
+            output, ok = tools.run_shell(command, self.work_dir, timeout=timeout)
+        self.trace.write("shell", command=command, ok=ok, chars=len(output),
+                         timeout_s=round(timeout, 1))
         self.budget.record_result(ok)
         return output
 
@@ -207,7 +264,12 @@ class Run:
 
     def step(self):
         """One turn. Returns False when the run should stop."""
-        choice, usage, (images, videos) = self._call_model()
+        called = self._call_model()
+        if called is None:
+            # The wall clock ran out before the model could answer.
+            self.stop_reason = Termination.TIMEOUT
+            return False
+        choice, usage, (images, videos) = called
         message = choice.message
         self.budget.spend(turns=1)
 
@@ -293,6 +355,6 @@ class Run:
             self.trace.write("end", termination=self.stop_reason,
                              submitted=bool(self.submitted), path=self.submitted,
                              delivered_elsewhere=self.delivered_elsewhere,
-                             rewinds=self.rewinds,
+                             rewinds=self.rewinds, api_retries=self.api_retries_used,
                              **self.budget.state(), **self.progress.state())
         return self.submitted, self.stop_reason

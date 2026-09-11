@@ -6,7 +6,7 @@ from pathlib import Path
 from openai import OpenAI
 
 from harness import budget as budget_mod
-from harness import loop, media, prompt, trace
+from harness import loop, media, prompt, tools, trace
 
 
 def main(argv=None):
@@ -37,6 +37,15 @@ def main(argv=None):
                              "and larger views are delivered in batches")
     parser.add_argument("--max-videos", type=int, default=media.MAX_VIDEOS,
                         help="videos per request; the API refuses more than 5")
+    parser.add_argument("--api-retries", type=int, default=loop.API_RETRIES,
+                        help="retries of a failed model request, with exponential "
+                             "backoff, before the run fails")
+    parser.add_argument("--retry-backoff", type=float, default=loop.RETRY_BACKOFF_S,
+                        help="seconds before the first retry; doubles for each after")
+    parser.add_argument("--request-timeout", type=float, default=loop.REQUEST_TIMEOUT_S,
+                        help="seconds one model request may take, capped at the time left")
+    parser.add_argument("--command-timeout", type=float, default=tools.COMMAND_TIMEOUT_S,
+                        help="seconds one shell command may run, capped at the time left")
     parser.add_argument("--model", help="override the model id")
     parser.add_argument("--base-url", help="override the API base url")
     parser.add_argument("--api-key-env", default="META_AI_API_KEY")
@@ -60,9 +69,12 @@ def main(argv=None):
         max_videos=args.max_videos, source_dir=args.source_dir, output_path=args.output,
     )
 
+    # max_retries=0: the loop retries failed requests itself, and the SDK's own
+    # retries would silently multiply that count.
     client = OpenAI(api_key=api_key,
                     base_url=args.base_url or os.environ.get(
-                        "MONTAGE_BASE_URL", "https://api.meta.ai/v1"))
+                        "MONTAGE_BASE_URL", "https://api.meta.ai/v1"),
+                    timeout=args.request_timeout, max_retries=0)
     model = args.model or os.environ.get("MONTAGE_MODEL", "muse-spark-1.2-contributor")
 
     runs_dir = Path(args.runs_dir)
@@ -79,7 +91,9 @@ def main(argv=None):
         trace=recorder, max_view_bytes=args.max_view_mb * 1024 * 1024,
         keep_last_looks=args.keep_looks, max_images=args.max_images,
         max_videos=args.max_videos, allow_rewind=not args.no_rewind,
-        trajectory_path=trajectory_path,
+        trajectory_path=trajectory_path, api_retries=args.api_retries,
+        retry_backoff=args.retry_backoff, request_timeout=args.request_timeout,
+        command_timeout=args.command_timeout,
     )
 
     print(f"model={model}  max_seconds={args.max_seconds}  "

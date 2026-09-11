@@ -137,6 +137,21 @@ points at `transcribe`.
 
 **Picture perception is measured. Speech perception is provided.**
 
+### When a request fails
+
+Anything other than a media-cap refusal — a 500, a 400 the harness cannot fix, a
+dropped connection, a timeout — is retried unchanged up to `--api-retries` times
+(default 5), waiting 15s, 30s, 60s, 120s, then 240s in between (`--retry-backoff`
+sets the first wait). A retry that succeeds carries the run on as if nothing
+happened; only when all of them fail does the error end the run, with
+termination `error:<ExceptionType>`. Each retry is an `api_retry` trace event,
+and the `end` event counts them. The OpenAI SDK's own retries are off, so this
+is the only count — left on, they would silently triple it.
+
+A retry the remaining wall clock cannot wait for is not attempted: the run ends
+as `TIMEOUT`, with an `api_retry_out_of_time` trace event saying which failure
+it was waiting out.
+
 ## What bounds a run
 
 No turn cap. A turn count encodes an assumption about how many steps the work
@@ -151,6 +166,24 @@ it. Terminal-Bench bounds on wall-clock alone for the same reason.
 | Stall | see below | `--no-rewind` to disable recovery |
 
 `safety_turns=500` exists only as a runaway guard and is not a capability limit.
+
+### Finishing in time
+
+The wall clock is a promise to whatever runs the harness, which kills it at its
+own limit — taking the trajectory with it. So nothing inside a run may outlast
+`--max-seconds`:
+
+| | Ceiling | Flag | Also capped at |
+|---|---|---|---|
+| One shell command | 1800s | `--command-timeout` | the time left |
+| One model request | 600s | `--request-timeout` | the time left |
+| A retry's wait | 15s doubling | `--retry-backoff` | not attempted if it would not fit |
+
+A command's timeout kills its whole process group, so an ffmpeg or `transcribe`
+it started does not run on. Once less than a second is left, a command is not
+started at all. What stays uncapped is small: ffprobe on a view or a submission
+(60s at most each) and writing the trajectory. Leave a margin for those between
+`--max-seconds` and the outer limit — the Harbor adapter leaves 600s.
 
 ### Stall detection
 
@@ -209,6 +242,8 @@ Three fields, never merged, following Terminal-Bench's `is_resolved` +
 - `delivered_elsewhere` — boolean
 
 A run that timed out is not a bad edit. Pooling those makes the numbers lie.
+A run the API gave out on ends as `error:<ExceptionType>` and says nothing about
+the model at all.
 
 `delivered_elsewhere` is the same argument one level down. Given `--output`, an
 accepted submission is copied there if it is not already there — the grader

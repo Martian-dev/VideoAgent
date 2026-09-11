@@ -258,15 +258,17 @@ class LoopTest(unittest.TestCase):
         self.assertEqual(media.count_media(run.messages), (0, 0))
         self.assertEqual(termination, "ABANDONED")
 
-    def test_other_bad_requests_still_raise(self):
+    def test_other_bad_requests_are_retried_unchanged_then_raise(self):
         client = FakeClient([])
         client.chat.completions.create = mock.Mock(
             side_effect=ApiError(400, "invalid tool schema"))
         run = loop.Run(client=client, model="fake", system="system",
                        instruction="task", work_dir=self.work, output_path=None,
                        budget=budget.Budget(), trace=trace.Trace(self.trace_path))
-        with self.assertRaises(ApiError):
+        with mock.patch.object(loop.time, "sleep"), self.assertRaises(ApiError):
             run.run()
+        self.assertEqual(client.chat.completions.create.call_count, loop.API_RETRIES + 1)
+        self.assertEqual(self.events("media_limit_retry"), [])
 
 
 if __name__ == "__main__":

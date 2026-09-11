@@ -62,6 +62,10 @@ class Budget:
     def elapsed(self):
         return time.time() - self.started
 
+    def remaining(self):
+        """Seconds of wall clock left, never below zero."""
+        return max(0.0, self.max_seconds - self.elapsed)
+
     def exhausted(self):
         """The Termination reason that applies, or None."""
         if self.elapsed >= self.max_seconds:

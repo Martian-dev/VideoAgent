@@ -4,7 +4,10 @@ Descriptions are factual: what the tool does and what it returns. None of them
 say anything about video editing, which segments matter, or how to approach a
 task - the model brings all of that.
 """
+import contextlib
+import os
 import shutil
+import signal
 import subprocess
 from pathlib import Path
 
@@ -70,32 +73,49 @@ SCHEMA = [
 ]
 
 MAX_OUTPUT_CHARS = 12000
+# The longest one command may run, before the cap at the run's remaining time.
+# Transcription runs at ~1.5x realtime, so a short ceiling would kill work the
+# model legitimately asked for on a long source.
+COMMAND_TIMEOUT_S = 1800
 
 
-def run_shell(command, cwd, timeout=600):
-    """Execute a command and format the result the way the model will read it."""
+def run_shell(command, cwd, timeout=COMMAND_TIMEOUT_S):
+    """Execute a command and format the result the way the model will read it.
+
+    The command gets its own process group, and a timeout kills all of it.
+    Killing only the shell would leave an ffmpeg or a transcribe it started
+    running on, competing for the CPU with everything after it.
+    """
+    process = subprocess.Popen(
+        command, shell=True, cwd=str(cwd), stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, errors="replace",
+        start_new_session=True,
+    )
     try:
-        result = subprocess.run(
-            command, shell=True, cwd=str(cwd), capture_output=True,
-            text=True, timeout=timeout, errors="replace",
-        )
+        stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        return f"[timed out after {timeout}s]", False
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        # Something that left the group can still hold the pipes open; the
+        # harness does not wait on it.
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.communicate(timeout=5)
+        return f"[timed out after {timeout:.0f}s]", False
 
     parts = []
-    if result.stdout.strip():
-        parts.append(result.stdout.rstrip())
-    if result.stderr.strip():
-        parts.append(f"[stderr]\n{result.stderr.rstrip()}")
-    if result.returncode != 0:
-        parts.append(f"[exit {result.returncode}]")
+    if stdout.strip():
+        parts.append(stdout.rstrip())
+    if stderr.strip():
+        parts.append(f"[stderr]\n{stderr.rstrip()}")
+    if process.returncode != 0:
+        parts.append(f"[exit {process.returncode}]")
     text = "\n".join(parts) or "[no output]"
 
     if len(text) > MAX_OUTPUT_CHARS:
         half = MAX_OUTPUT_CHARS // 2
         omitted = len(text) - MAX_OUTPUT_CHARS
         text = f"{text[:half]}\n\n[... {omitted} characters omitted ...]\n\n{text[-half:]}"
-    return text, result.returncode == 0
+    return text, process.returncode == 0
 
 
 def run_view(paths, cwd, max_bytes):
