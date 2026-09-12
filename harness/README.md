@@ -218,7 +218,8 @@ The **deliverable directory holds only the deliverable.** Everything else goes t
 ```
 /app/output/final_video.mp4     the submission, verified with ffprobe
 /app/runs/trace.jsonl           one JSON line per event, appended as it happens
-/app/runs/trajectory.json       the full conversation, media redacted
+/app/runs/trajectory.json       the conversation as ATIF, media redacted
+/app/runs/messages.json         the same conversation as raw chat messages
 /app/work/                      the model's own scratch: frames, scripts, cuts
 ```
 
@@ -227,10 +228,38 @@ loses its stdout still leaves a complete record. That is not theoretical — a
 17-minute run lost its entire stdout to an ssh timeout and lost nothing that
 mattered. **Drive automation off the trace file, not stdout.**
 
-`trajectory.json` is written in a `finally` block, so a crashed run still leaves a
-readable transcript. Media blocks become `[image_url, 30017 bytes, omitted]`
-placeholders — a single 30s clip is several megabytes of base64 and is not what
-anyone reads a trajectory for.
+`trajectory.json` and `messages.json` are written in a `finally` block, so a
+crashed run still leaves a readable transcript. Media blocks become
+`[image_url, 30017 bytes, omitted]` placeholders — a single 30s clip is several
+megabytes of base64 and is not what anyone reads a trajectory for.
+
+### The trajectory is ATIF
+
+`trajectory.json` is [ATIF](https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-trajectory-format.md)
+(`ATIF-v1.7`) — the interchange format a trajectory viewer, a trajectory judge or
+an OTel exporter reads, and the one a run is replayed into another agent from.
+The harness writes it directly rather than leaving a runner to convert it
+afterwards, because what ATIF wants per step — when it happened, what the turn
+cost, which result answered which call — is in hand while the run happens and
+has to be reconstructed once it is over. ATIF is a published format rather than
+any runner's API, so emitting it costs the harness no dependency on whatever is
+measuring with it: `harness/atif.py` writes the JSON by hand.
+
+The mapping is a fold. Chat messages are one message per part of a turn; ATIF is
+one step per turn, with that step's tool results inside it:
+
+| messages | ATIF |
+|---|---|
+| `system` / `user` message | a step, `source` system / user |
+| `assistant` message | a step, `source` agent, with its `tool_calls` and `metrics` |
+| the `tool` messages answering it | that step's `observation.results` |
+| media in a delivered look | described in that step's `message` text |
+
+`agent.version` comes from `--agent-version`, `$HARNESS_VERSION`, or a
+`HARNESS_VERSION` file beside the package, so a trajectory names the code that
+produced it. `messages.json` keeps the unfolded form — the exact shape that went
+to the API — for debugging the harness itself. A rewind drops its turns from
+both files.
 
 ### Outcome reporting
 

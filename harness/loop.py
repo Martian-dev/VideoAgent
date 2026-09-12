@@ -16,7 +16,7 @@ import time
 
 from openai import OpenAI
 
-from harness import media, progress as progress_mod, tools
+from harness import atif, media, progress as progress_mod, tools
 from harness import trace as trace_mod
 from harness.budget import Termination
 
@@ -60,7 +60,8 @@ class Run:
     def __init__(self, client, model, system, instruction, work_dir, output_path,
                  budget, trace, max_view_bytes=media.MAX_BYTES, keep_last_looks=4,
                  max_images=media.MAX_IMAGES, max_videos=media.MAX_VIDEOS,
-                 allow_rewind=True, trajectory_path=None, api_retries=API_RETRIES,
+                 allow_rewind=True, trajectory_path=None, messages_path=None,
+                 agent_version="unknown", api_retries=API_RETRIES,
                  retry_backoff=RETRY_BACKOFF_S, request_timeout=REQUEST_TIMEOUT_S,
                  command_timeout=tools.COMMAND_TIMEOUT_S):
         self.client = client
@@ -80,18 +81,43 @@ class Run:
         self.request_timeout = request_timeout
         self.command_timeout = command_timeout
 
-        self.messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": instruction},
-        ]
+        self.messages = []
+        # What ATIF needs and a chat message does not carry: when it was said,
+        # and what the turn cost. Kept parallel to `messages` - appended with
+        # them, truncated with them - so a rewind cannot put them out of step.
+        self.records = []
+        self.session_id = atif.session_id()
+        self.agent_version = agent_version
+        self._remember({"role": "system", "content": system})
+        self._remember({"role": "user", "content": instruction})
         self.submitted = None
         self.delivered_elsewhere = False
         self.stop_reason = None
         self.allow_rewind = allow_rewind
         self.trajectory_path = trajectory_path
+        self.messages_path = messages_path
         self.rewinds = 0
         self.progress = progress_mod.Progress(output_path=output_path,
                                               work_dir=str(work_dir))
+
+    # -- the conversation --------------------------------------------------
+
+    def _remember(self, message, metrics=None):
+        """Append a message, and the facts about it ATIF needs."""
+        self.messages.append(message)
+        self.records.append({"time": atif.timestamp(), "metrics": metrics})
+
+    def trajectory(self):
+        """The run so far as an ATIF trajectory."""
+        return atif.build(
+            self.messages, self.records, model=self.model,
+            version=self.agent_version, session=self.session_id,
+            totals={"total_prompt_tokens": self.budget.input_tokens,
+                    "total_completion_tokens": self.budget.output_tokens,
+                    "total_cost_usd": round(self.budget.cost_usd, 4)},
+            notes=(f"termination={self.stop_reason} "
+                   f"submitted={self.submitted or False}"),
+        )
 
     # -- model ------------------------------------------------------------
 
@@ -226,7 +252,7 @@ class Run:
         if not looks:
             return None
         queued = self.deliveries.queued()
-        self.messages.append(media.user_message(looks, queued=queued))
+        self._remember(media.user_message(looks, queued=queued))
         paths = [look.path for look in looks]
         self.trace.write("deliver", paths=paths, queued=queued,
                          images=sum(look.kind == "image" for look in looks),
@@ -282,7 +308,10 @@ class Run:
             images_in_context=images, videos_in_context=videos,
         )
 
-        self.messages.append(message.model_dump(exclude_none=True))
+        self._remember(message.model_dump(exclude_none=True),
+                       metrics={"prompt_tokens": getattr(usage, "prompt_tokens", None),
+                                "completion_tokens": getattr(usage, "completion_tokens",
+                                                             None)})
 
         if not message.tool_calls and not self.deliveries:
             # Nothing asked for and nothing submitted: the model has stopped.
@@ -295,7 +324,7 @@ class Run:
         actions = []
         for call in message.tool_calls or []:
             result = self._dispatch(call)
-            self.messages.append({
+            self._remember({
                 "role": "tool", "tool_call_id": call.id, "content": result,
             })
             actions.append((call.function.name, call.function.arguments or "", result))
@@ -318,6 +347,7 @@ class Run:
                 self.rewinds += 1
                 dropped = len(self.messages) - self.progress.loop_start_idx
                 del self.messages[self.progress.loop_start_idx:]
+                del self.records[self.progress.loop_start_idx:]
                 # Looks queued by the dropped turns go with them.
                 self.deliveries.clear()
                 self.progress.reset_after_rewind()
@@ -345,13 +375,18 @@ class Run:
             self.trace.write("error", type=type(e).__name__, message=str(e)[:800])
             raise
         finally:
+            # Written in `finally` so a crashed or killed run still leaves a
+            # readable transcript behind.
             if self.trajectory_path:
-                # Written in `finally` so a crashed or killed run still leaves a
-                # readable transcript behind.
                 try:
-                    trace_mod.save_trajectory(self.messages, self.trajectory_path)
+                    atif.save(self.trajectory_path, self.trajectory())
                 except Exception as e:
                     self.trace.write("trajectory_failed", error=str(e)[:200])
+            if self.messages_path:
+                try:
+                    trace_mod.save_trajectory(self.messages, self.messages_path)
+                except Exception as e:
+                    self.trace.write("messages_failed", error=str(e)[:200])
             self.trace.write("end", termination=self.stop_reason,
                              submitted=bool(self.submitted), path=self.submitted,
                              delivered_elsewhere=self.delivered_elsewhere,

@@ -1,5 +1,6 @@
 """CLI entry point: harness.run --source X --instruction Y"""
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -7,6 +8,24 @@ from openai import OpenAI
 
 from harness import budget as budget_mod
 from harness import loop, media, prompt, tools, trace
+
+
+def harness_version():
+    """What the ATIF trajectory records as the agent's version.
+
+    ATIF requires one. Whoever installs the harness writes a HARNESS_VERSION
+    file beside the package - the Harbor adapter puts the source revision in it
+    - so a trajectory can be traced back to the code that produced it.
+    """
+    from_env = os.environ.get("HARNESS_VERSION")
+    if from_env:
+        return from_env.strip()
+    try:
+        version = (Path(__file__).resolve().parent.parent
+                   / "HARNESS_VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        version = ""
+    return version or "unknown"
 
 
 def main(argv=None):
@@ -49,9 +68,11 @@ def main(argv=None):
     parser.add_argument("--model", help="override the model id")
     parser.add_argument("--base-url", help="override the API base url")
     parser.add_argument("--api-key-env", default="META_AI_API_KEY")
+    parser.add_argument("--agent-version", default=None,
+                        help="version recorded in the ATIF trajectory (default: "
+                             "$HARNESS_VERSION, else the HARNESS_VERSION file)")
     args = parser.parse_args(argv)
 
-    import os
     api_key = os.environ.get(args.api_key_env)
     if not api_key:
         print(f"No API key: set {args.api_key_env}")
@@ -80,7 +101,10 @@ def main(argv=None):
     runs_dir = Path(args.runs_dir)
     runs_dir.mkdir(parents=True, exist_ok=True)
     trace_path = runs_dir / "trace.jsonl"
+    # ATIF, at the name anything that reads trajectories looks for.
     trajectory_path = runs_dir / "trajectory.json"
+    # The chat messages as they went to the API, media redacted.
+    messages_path = runs_dir / "messages.json"
     recorder = trace.Trace(trace_path)
     run = loop.Run(
         client=client, model=model, system=system, instruction=instruction,
@@ -91,7 +115,9 @@ def main(argv=None):
         trace=recorder, max_view_bytes=args.max_view_mb * 1024 * 1024,
         keep_last_looks=args.keep_looks, max_images=args.max_images,
         max_videos=args.max_videos, allow_rewind=not args.no_rewind,
-        trajectory_path=trajectory_path, api_retries=args.api_retries,
+        trajectory_path=trajectory_path, messages_path=messages_path,
+        agent_version=args.agent_version or harness_version(),
+        api_retries=args.api_retries,
         retry_backoff=args.retry_backoff, request_timeout=args.request_timeout,
         command_timeout=args.command_timeout,
     )
@@ -107,7 +133,8 @@ def main(argv=None):
     if run.delivered_elsewhere:
         print(f"delivered_elsewhere=True  (harness copied it to {args.output})")
     print(f"trace summary: {recorder.summary()}")
-    print(f"trace={trace_path}  trajectory={trajectory_path}")
+    print(f"trace={trace_path}  trajectory={trajectory_path}  "
+          f"messages={messages_path}")
     return 0 if submitted else 1
 
 

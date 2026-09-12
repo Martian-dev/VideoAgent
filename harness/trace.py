@@ -31,22 +31,26 @@ class Trace:
 MEDIA_TYPES = {"image_url", "video_url", "input_audio"}
 
 
-def _redact(part):
-    """Replace a media block with a description of what was there.
+def describe(part):
+    """A media block as the text that replaces it: what it was, and how big.
 
     Base64 payloads would make the file enormous - a single 30s clip is several
     megabytes of text - and they are not what anyone reads a trajectory for.
     The placeholder records that a look happened and how big it was.
     """
     kind = part.get("type")
-    if kind not in MEDIA_TYPES:
-        return part
     if kind == "input_audio":
         payload = (part.get("input_audio") or {}).get("data", "")
     else:
         payload = (part.get(kind) or {}).get("url", "")
-    return {"type": "text",
-            "text": f"[{kind}, {len(payload) * 3 // 4} bytes, omitted from the trajectory]"}
+    return f"[{kind}, {len(payload) * 3 // 4} bytes, omitted from the trajectory]"
+
+
+def _redact(part):
+    """Replace a media block with a description of what was there."""
+    if part.get("type") not in MEDIA_TYPES:
+        return part
+    return {"type": "text", "text": describe(part)}
 
 
 def save_trajectory(messages, path):
